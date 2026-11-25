@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AevumPay — pay-links for agents (Aevum testnet)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
+  input, button { font: inherit; padding: .4rem .6rem; margin: .2rem 0; }
+  input { width: 100%; box-sizing: border-box; }
+  button { cursor: pointer; }
+  .card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+  .mono { font-family: monospace; word-break: break-all; }
+  .ok { color: green; } .err { color: #b00; }
+  small { color: #555; }
+</style>
+</head>
+<body>
+<h1>AevumPay — pay-links for agents</h1>
+<p>One end-to-end tUSD8 payment flow on <b>Aevum testnet (chain 44005)</b>.
+A merchant creates a payment link; a buyer pays it once — either the standard
+way (approve + pay) or <b>gaslessly</b>: the buyer signs an EIP-3009
+authorization off-chain and anyone relays it. Agents can register a
+human-readable name (Confirmation of Payee).</p>
+<p><small>Testnet only. No real money. Contract: <span class="mono" id="contractAddr"></span>
+(<a id="explorerLink" target="_blank" rel="noopener">explorer</a>).
+Update <code>AEVUMPAY_ADDRESS</code> below after deployment.</small></p>
+
+<div class="card">
+  <h2>1. Connect wallet</h2>
+  <button id="connectBtn">Connect MetaMask</button>
+  <button id="addNetBtn">Add Aevum testnet to wallet</button>
+  <p>Account: <span class="mono" id="account">—</span></p>
+  <p>tUSD8 balance: <span id="tusdb">—</span></p>
+  <p id="connStatus"></p>
+</div>
+
+<div class="card">
+  <h2>2. Create a payment link (merchant)</h2>
+  <label>Amount (tUSD8) <input id="amount" value="2.5"></label>
+  <label>Description <input id="desc" value="Demo: kopi untuk agent"></label>
+  <label>Expiry (seconds) <input id="expiry" value="86400"></label>
+  <label>Agent address (optional) <input id="agent" placeholder="0x… or empty"></label>
+  <button id="createBtn">Create link</button>
+  <p id="createStatus"></p>
+</div>
+
+<div class="card">
+  <h2>3. Pay a link (buyer)</h2>
+  <label>Link ID <input id="linkId" value="1"></label>
+  <button id="payBtn">Pay (approve + pay)</button>
+  <button id="gaslessBtn">Pay gaslessly (sign + relay)</button>
+  <p id="payStatus"></p>
+  <h2>Look up a link</h2>
+  <button id="lookupBtn">Look up link</button>
+  <pre id="lookupOut">—</pre>
+</div>
+
+<div class="card">
+  <h2>4. Agent registry (Confirmation of Payee)</h2>
+  <label>Register my name <input id="agentName" placeholder="e.g. kopi-agent"></label>
+  <button id="regBtn">Register name</button>
+  <label>Resolve a name <input id="resolveName" placeholder="e.g. kopi-agent"></label>
+  <button id="resolveBtn">Resolve</button>
+  <p id="agentStatus"></p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
+<script>
+// ---- config: update after deploying to Aevum testnet ----
+const AEVUMPAY_ADDRESS = '0x0000000000000000000000000000000000000000'; // TODO: deployed address
+const TUSD8_ADDRESS = '0x456569838f1d43009A91ebA4263147Afd7233483';
+const CHAIN_ID = 44005;
+const RPC_URL = 'https://rpc-test.qday.info';
+const EXPLORER = 'https://explorer-test.qday.info';
+const AEVUMPAY_ABI = [
+  'function createLink(uint256 amount, string description, uint256 expirySeconds, address agent) returns (uint256)',
+  'function pay(uint256 linkId)',
+  'function payWithAuthorization(uint256 linkId, address from, uint256 validAfter, uint256 validBefore, bytes signature)',
+  'function authorizationNonce(uint256 linkId) view returns (bytes32)',
+  'function paymentOf(uint256 linkId) view returns (address merchant, address agent, uint256 amount, uint256 expiry, string description, bool paid, address payer)',
+  'function registerAgent(string name)',
+  'function agentName(address) view returns (string)',
+  'function agentAddress(string) view returns (address)',
+  'event LinkCreated(uint256 indexed linkId, address indexed merchant, address indexed agent, uint256 amount, uint256 expiry, string description)',
+  'event Paid(uint256 indexed linkId, address indexed payer, address indexed merchant, uint256 amount, bool gasless)',
+];
+const ERC20_ABI = [
+  'function balanceOf(address) view returns (uint256)',
+  'function approve(address spender, uint256 value) returns (bool)',
+];
+// ---------------------------------------------------------
+document.getElementById('contractAddr').textContent = AEVUMPAY_ADDRESS;
+document.getElementById('explorerLink').href = EXPLORER + '/address/' + AEVUMPAY_ADDRESS;
+
+let provider, signer, account, pay, tusd8;
+const $ = (id) => document.getElementById(id);
+const txUrl = (h) => EXPLORER + '/tx/' + h;
+function note(el, msg, ok) { el.innerHTML = msg; el.className = ok ? 'ok' : 'err'; }
+
+async function ensurePay() {
+  if (!signer) throw new Error('Connect your wallet first.');
+  if (AEVUMPAY_ADDRESS === '0x0000000000000000000000000000000000000000')
+    throw new Error('AevumPay is not deployed yet — update AEVUMPAY_ADDRESS after deployment.');
+}
+
+$('connectBtn').onclick = async () => {
+  try {
+    if (!window.ethereum) throw new Error('MetaMask not found.');
+    provider = new ethers.BrowserProvider(window.ethereum);
+    await provider.send('eth_requestAccounts', []);
+    signer = await provider.getSigner();
+    account = await signer.getAddress();
+    pay = new ethers.Contract(AEVUMPAY_ADDRESS, AEVUMPAY_ABI, signer);
+    tusd8 = new ethers.Contract(TUSD8_ADDRESS, ERC20_ABI, provider);
+    $('account').textContent = account;
+    const bal = await tusd8.balanceOf(account);
+    $('tusdb').textContent = ethers.formatUnits(bal, 6) + ' tUSD8';
+    const net = await provider.getNetwork();
+    note($('connStatus'), Number(net.chainId) === CHAIN_ID
+      ? 'Connected to Aevum testnet.' : 'Connected, but not on Aevum testnet (chain 44005) — use "Add Aevum testnet".', Number(net.chainId) === CHAIN_ID);
+  } catch (e) { note($('connStatus'), 'Error: ' + (e.shortMessage || e.message)); }
+};
+
+$('addNetBtn').onclick = async () => {
+  try {
+    await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [{
+      chainId: '0xabe5', chainName: 'QDay Aevum Testnet',
+      nativeCurrency: { name: 'tQDAY', symbol: 'tQDAY', decimals: 18 },
+      rpcUrls: [RPC_URL], blockExplorerUrls: [EXPLORER],
+    }] });
+  } catch (e) { alert('Could not add network: ' + (e.message || e)); }
+};
+
+$('createBtn').onclick = async () => {
+  try {
+    await ensurePay();
+    const amount = ethers.parseUnits($('amount').value, 6);
+    const agent = $('agent').value.trim() || ethers.ZeroAddress;
+    const tx = await pay.createLink(amount, $('desc').value, Number($('expiry').value), agent, { type: 0 });
+    const rc = await tx.wait();
+    const ev = rc.logs.map((l) => { try { return pay.interface.parseLog(l); } catch { return null; } })
+      .find((e) => e && e.name === 'LinkCreated');
+    note($('createStatus'), 'Link #' + ev.args.linkId + ' created — <a target="_blank" href="' + txUrl(tx.hash) + '">tx</a>', true);
+    $('linkId').value = ev.args.linkId.toString();
+  } catch (e) { note($('createStatus'), 'Error: ' + (e.shortMessage || e.message)); }
+};
+
+$('payBtn').onclick = async () => {
+  try {
+    await ensurePay();
+    const linkId = $('linkId').value;
+    const link = await pay.paymentOf(linkId);
+    if (link.paid) throw new Error('Link already paid.');
+    const approveTx = await tusd8.connect(signer).approve(AEVUMPAY_ADDRESS, link.amount, { type: 0 });
+    await approveTx.wait();
+    const nonce = await provider.getTransactionCount(account, 'latest');
+    const tx = await pay.pay(linkId, { type: 0, nonce });
+    await tx.wait();
+    note($('payStatus'), 'Paid ' + ethers.formatUnits(link.amount, 6) + ' tUSD8 — <a target="_blank" href="' + txUrl(tx.hash) + '">tx</a>', true);
+  } catch (e) { note($('payStatus'), 'Error: ' + (e.shortMessage || e.message)); }
+};
+
+$('gaslessBtn').onclick = async () => {
+  try {
+    await ensurePay();
+    const linkId = $('linkId').value;
+    const link = await pay.paymentOf(linkId);
+    if (link.paid) throw new Error('Link already paid.');
+    const nonce = await pay.authorizationNonce(linkId);
+    const now = Math.floor(Date.now() / 1000);
+    const validAfter = now - 60, validBefore = now + 3600;
+    const domain = { name: 'tUSD8', version: '2', chainId: CHAIN_ID, verifyingContract: TUSD8_ADDRESS };
+    const types = { ReceiveWithAuthorization: [
+      { name: 'from', type: 'address' }, { name: 'to', type: 'address' },
+      { name: 'value', type: 'uint256' }, { name: 'validAfter', type: 'uint256' },
+      { name: 'validBefore', type: 'uint256' }, { name: 'nonce', type: 'bytes32' } ] };
+    const signature = await signer.signTypedData(domain, types,
+      { from: account, to: AEVUMPAY_ADDRESS, value: link.amount, validAfter, validBefore, nonce });
+    // You act as the relayer here and pay the gas.
+    const tx = await pay.payWithAuthorization(linkId, account, validAfter, validBefore, signature, { type: 0 });
+    await tx.wait();
+    note($('payStatus'), 'Paid gaslessly ' + ethers.formatUnits(link.amount, 6) + ' tUSD8 — <a target="_blank" href="' + txUrl(tx.hash) + '">tx</a>', true);
+  } catch (e) { note($('payStatus'), 'Error: ' + (e.shortMessage || e.message)); }
+};
+
+$('lookupBtn').onclick = async () => {
+  try {
+    await ensurePay();
+    const link = await pay.paymentOf($('linkId').value);
+    $('lookupOut').textContent = JSON.stringify({
+      merchant: link.merchant, agent: link.agent,
+      amount: ethers.formatUnits(link.amount, 6) + ' tUSD8',
+      expiry: new Date(Number(link.expiry) * 1000).toISOString(),
+      description: link.description, paid: link.paid, payer: link.payer,
+    }, null, 2);
+  } catch (e) { $('lookupOut').textContent = 'Error: ' + (e.shortMessage || e.message); }
+};
+
+$('regBtn').onclick = async () => {
+  try {
+    await ensurePay();
+    const tx = await pay.registerAgent($('agentName').value.trim(), { type: 0 });
+    await tx.wait();
+    note($('agentStatus'), 'Name registered — <a target="_blank" href="' + txUrl(tx.hash) + '">tx</a>', true);
+  } catch (e) { note($('agentStatus'), 'Error: ' + (e.shortMessage || e.message)); }
+};
+
+$('resolveBtn').onclick = async () => {
+  try {
+    await ensurePay();
+    const addr = await pay.agentAddress($('resolveName').value.trim());
+    note($('agentStatus'), $('resolveName').value.trim() + ' → ' + addr, addr !== ethers.ZeroAddress);
+  } catch (e) { note($('agentStatus'), 'Error: ' + (e.shortMessage || e.message)); }
+};
+</script>
+</body>
+</html>

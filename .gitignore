@@ -1,0 +1,27 @@
+# Compiler files
+cache/
+out/
+
+# Broadcast logs (kept out of the repo; deployment addresses go in the README)
+broadcast/
+
+# Commonly ignored directories
+.logs/
+.ignore/
+
+# Dotenv files
+.env
+.env.*
+!.env.example
+
+# Keys — NEVER commit. Throwaway testnet-only wallets live in .keys/ (mode 700/600).
+.keys/
+
+# JS demo dependencies
+demo/node_modules/
+demo/package-lock.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
