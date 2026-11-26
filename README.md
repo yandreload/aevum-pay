@@ -119,14 +119,24 @@ buyer-agent pays, the relayer settles, the script verifies `paymentOf`.
 Full steps: `docs/DEMO.md`. Architecture, safety notes and known
 limitations: `docs/ARCHITECTURE.md`.
 
-## Deploying to Aevum testnet (pending)
+## Deploying to Aevum testnet (deployed 26 Nov 2026)
 
 The deployer is a fresh throwaway testnet-only wallet (keys in `.keys/`,
 gitignored, never committed):
 
 - **Deployer address: `0xdDF74b8D1305B4C5EC421bcA51f010a6bD368c95`**
-- Balance on the real testnet (checked 25 Nov 2026 via the explorer API):
-  **0 tQDAY, 0 tUSD8** — deployment is impossible until it is funded.
+- **AevumPay: `0x1Ce5d92870640cFa8F73572B8321FF91B0630d77`** (chain 44005) —
+  deploy tx `0x2e3a884e18531962bdd3581e5976253e077c53c10e1ee62d3296f7d72743ed76`,
+  explorer: https://explorer-test.qday.info/address/0x1Ce5d92870640cFa8F73572B8321FF91B0630d77
+- Funded 26 Nov 2026 via the Discord faucet (1 tQDAY + 5 tUSD8). Deploy cost
+  ~0.00194 tQDAY. Note: Foundry's Rust TLS stack cannot talk to
+  `rpc-test.qday.info` directly (server closes TLS without close_notify);
+  deploy through the local relay `node tools/rpc-relay.mjs`
+  (`--rpc-url http://127.0.0.1:8545`).
+- Smoke test 26 Nov 2026 (gasless, demo/agent-pay.mjs): link #1 for 2.5 tUSD8
+  created (tx `0x8d086a3f2cd5c9699f56b3a1d726040d934f0bd2dbbb17b6fb670b7cc6c38f8b`),
+  settled in block 4130297 (tx `0xc5d46b03882d239969264bff7fe3b60426f3c8065c9a2567327a7dcac10ddb08`),
+  `paymentOf(1).paid == true`, merchant balance 5.0 tUSD8 after.
 
 ### How to fund it (one human step)
 
